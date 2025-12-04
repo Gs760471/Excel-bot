@@ -1,43 +1,51 @@
 import os
+
+from flask import Flask, request
+
 import pdfplumber
 import pandas as pd
-from flask import Flask, request
-from telegram import Bot
+
+from telegram import Bot, Update
 from telegram.ext import Dispatcher, MessageHandler, Filters
 
-TOKEN = os.getenv("BOT_TOKEN")  # Set in Render environment variables
-bot = Bot(TOKEN)
+TOKEN = os.getenv("BOT_TOKEN")
+if not TOKEN:
+    raise RuntimeError("BOT_TOKEN env var is not set")
 
+bot = Bot(TOKEN)
 app = Flask(__name__)
 
-# Telegram Dispatcher
-dispatcher = Dispatcher(bot, None, workers=0)
+# Dispatcher (no update_queue because we use webhooks)
+dispatcher = Dispatcher(bot, None, workers=0, use_context=True)
 
 
-# Start Command
 def start(update, context):
     update.message.reply_text("Send me a PDF and I’ll convert it to Excel 📊🔥")
 
 
-# Handle document uploads
 def handle_pdf(update, context):
-    document = update.message.document
+    message = update.message
 
-    if not document.file_name.lower().endswith(".pdf"):
-        update.message.reply_text("Please upload a PDF file 😄")
+    if not message.document:
+        message.reply_text("Please upload a PDF file 😄")
         return
 
-    update.message.reply_text("Processing your file… Please wait ⏳")
+    document = message.document
 
+    if not document.file_name.lower().endswith(".pdf"):
+        message.reply_text("Please upload a PDF file 😄")
+        return
+
+    message.reply_text("Processing your file… Please wait ⏳")
+
+    # Download file
     file = document.get_file()
-
     pdf_path = f"/tmp/{document.file_name}"
     excel_path = pdf_path.replace(".pdf", ".xlsx")
 
     file.download(pdf_path)
 
     all_rows = []
-
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
             table = page.extract_table()
@@ -46,19 +54,22 @@ def handle_pdf(update, context):
                     all_rows.append(row)
 
     if not all_rows:
-        update.message.reply_text("⚠️ Could not extract any table from this PDF!")
+        message.reply_text("⚠️ Could not extract any table from this PDF!")
         return
 
     df = pd.DataFrame(all_rows)
     df.to_excel(excel_path, index=False)
 
-    update.message.reply_document(
-        document=open(excel_path, "rb"),
-        filename=os.path.basename(excel_path),
-        caption="Here is your converted Excel file 😊"
-    )
+    # Send back the Excel
+    with open(excel_path, "rb") as f:
+        message.reply_document(
+            document=f,
+            filename=os.path.basename(excel_path),
+            caption="Here is your converted Excel file 😊",
+        )
 
 
+# Handlers
 dispatcher.add_handler(MessageHandler(Filters.document.pdf, handle_pdf))
 dispatcher.add_handler(MessageHandler(Filters.command, start))
 
@@ -72,11 +83,11 @@ def home():
 def webhook():
     json_update = request.get_json(force=True, silent=True)
     if json_update:
-        dispatcher.process_update(
-            telegram.Update.de_json(json_update, bot)
-        )
+        update = Update.de_json(json_update, bot)
+        dispatcher.process_update(update)
     return "ok", 200
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    # Local development only; Render will use gunicorn
+    app.run(host="0.0.0.0", port=10000, debug=True)
