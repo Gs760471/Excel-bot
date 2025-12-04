@@ -36,7 +36,8 @@ def handle_pdf(update, context):
         message.reply_text("Please upload a PDF file 😄")
         return
 
-    message.reply_text("Processing your file… Please wait ⏳")
+    # Initial progress message
+    progress_msg = message.reply_text("Processing your file… 0% done ⏳")
 
     # Download file
     file = document.get_file()
@@ -46,19 +47,48 @@ def handle_pdf(update, context):
     file.download(pdf_path)
 
     all_rows = []
+
     with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
+        total_pages = len(pdf.pages)
+        if total_pages == 0:
+            progress_msg.edit_text("⚠️ PDF seems to be empty.")
+            return
+
+        # Update roughly 10 times max
+        step = max(1, total_pages // 10)
+
+        for i, page in enumerate(pdf.pages, start=1):
             table = page.extract_table()
             if table:
                 for row in table:
                     all_rows.append(row)
 
+            # Update progress every "step" pages or on last page
+            if i % step == 0 or i == total_pages:
+                percent = int(i * 100 / total_pages)
+                try:
+                    progress_msg = progress_msg.edit_text(
+                        f"Processing your file… {percent}% done "
+                        f"({i}/{total_pages} pages) ⏳"
+                    )
+                except Exception:
+                    # If editing fails (e.g. message deleted), just ignore
+                    pass
+
     if not all_rows:
-        message.reply_text("⚠️ Could not extract any table from this PDF!")
+        progress_msg.edit_text("⚠️ Could not extract any table from this PDF!")
         return
 
     df = pd.DataFrame(all_rows)
     df.to_excel(excel_path, index=False)
+
+    # Final status update
+    try:
+        progress_msg = progress_msg.edit_text(
+            "Conversion complete ✅ Sending your Excel file..."
+        )
+    except Exception:
+        pass
 
     # Send back the Excel
     with open(excel_path, "rb") as f:
@@ -89,5 +119,5 @@ def webhook():
 
 
 if __name__ == "__main__":
-    # Local development only; Render will use gunicorn
+    # Local dev only; Render uses gunicorn app:app
     app.run(host="0.0.0.0", port=10000, debug=True)
